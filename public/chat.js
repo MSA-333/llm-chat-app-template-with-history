@@ -1,230 +1,304 @@
-/**
- * LLM Chat App Frontend
- *
- * Handles the chat UI interactions and communication with the backend API.
- */
-
-// DOM elements
-const chatMessages = document.getElementById("chat-messages");
-const userInput = document.getElementById("user-input");
-const sendButton = document.getElementById("send-button");
-const typingIndicator = document.getElementById("typing-indicator");
-
-// Chat state
-let chatHistory = [
-	{
-		role: "assistant",
-		content:
-			"Hello! I'm an LLM chat app powered by Cloudflare Workers AI. How can I help you today?",
-	},
-];
-let isProcessing = false;
-
-// Auto-resize textarea as user types
-userInput.addEventListener("input", function () {
-	this.style.height = "auto";
-	this.style.height = this.scrollHeight + "px";
-});
-
-// Send message on Enter (without Shift)
-userInput.addEventListener("keydown", function (e) {
-	if (e.key === "Enter" && !e.shiftKey) {
-		e.preventDefault();
-		sendMessage();
-	}
-});
-
-// Send button click handler
-sendButton.addEventListener("click", sendMessage);
-
-/**
- * Sends a message to the chat API and processes the response
- */
-async function sendMessage() {
-	const message = userInput.value.trim();
-
-	// Don't send empty messages
-	if (message === "" || isProcessing) return;
-
-	// Disable input while processing
-	isProcessing = true;
-	userInput.disabled = true;
-	sendButton.disabled = true;
-
-	// Add user message to chat
-	addMessageToChat("user", message);
-
-	// Clear input
-	userInput.value = "";
-	userInput.style.height = "auto";
-
-	// Show typing indicator
-	typingIndicator.classList.add("visible");
-
-	// Add message to history
-	chatHistory.push({ role: "user", content: message });
-
-	try {
-		// Create new assistant response element
-		const assistantMessageEl = document.createElement("div");
-		assistantMessageEl.className = "message assistant-message";
-		assistantMessageEl.innerHTML = "<p></p>";
-		chatMessages.appendChild(assistantMessageEl);
-		const assistantTextEl = assistantMessageEl.querySelector("p");
-
-		// Scroll to bottom
-		chatMessages.scrollTop = chatMessages.scrollHeight;
-
-		// Send request to API
-		const response = await fetch("/api/chat", {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-			},
-			body: JSON.stringify({
-				messages: chatHistory,
-			}),
-		});
-
-		// Handle errors
-		if (!response.ok) {
-			throw new Error("Failed to get response");
-		}
-		if (!response.body) {
-			throw new Error("Response body is null");
-		}
-
-		// Process streaming response
-		const reader = response.body.getReader();
-		const decoder = new TextDecoder();
-		let responseText = "";
-		let buffer = "";
-		const flushAssistantText = () => {
-			assistantTextEl.textContent = responseText;
-			chatMessages.scrollTop = chatMessages.scrollHeight;
-		};
-
-		let sawDone = false;
-		while (true) {
-			const { done, value } = await reader.read();
-
-			if (done) {
-				// Process any remaining complete events in buffer
-				const parsed = consumeSseEvents(buffer + "\n\n");
-				for (const data of parsed.events) {
-					if (data === "[DONE]") {
-						break;
-					}
-					try {
-						const jsonData = JSON.parse(data);
-						// Handle both Workers AI format (response) and OpenAI format (choices[0].delta.content)
-						let content = "";
-						if (
-							typeof jsonData.response === "string" &&
-							jsonData.response.length > 0
-						) {
-							content = jsonData.response;
-						} else if (jsonData.choices?.[0]?.delta?.content) {
-							content = jsonData.choices[0].delta.content;
-						}
-						if (content) {
-							responseText += content;
-							flushAssistantText();
-						}
-					} catch (e) {
-						console.error("Error parsing SSE data as JSON:", e, data);
-					}
-				}
-				break;
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<title>LLM Chat App</title>
+		<style>
+			:root {
+				--primary-color: #f6821f;
+				--primary-hover: #e67e22;
+				--light-bg: #f9fafb;
+				--border-color: #e5e7eb;
+				--text-color: #1f2937;
+				--text-light: #6b7280;
+				--user-msg-bg: #fff2e6;
+				--assistant-msg-bg: #ffffff;
 			}
 
-			// Decode chunk
-			buffer += decoder.decode(value, { stream: true });
-			const parsed = consumeSseEvents(buffer);
-			buffer = parsed.buffer;
-			for (const data of parsed.events) {
-				if (data === "[DONE]") {
-					sawDone = true;
-					buffer = "";
-					break;
-				}
-				try {
-					const jsonData = JSON.parse(data);
-					// Handle both Workers AI format (response) and OpenAI format (choices[0].delta.content)
-					let content = "";
-					if (
-						typeof jsonData.response === "string" &&
-						jsonData.response.length > 0
-					) {
-						content = jsonData.response;
-					} else if (jsonData.choices?.[0]?.delta?.content) {
-						content = jsonData.choices[0].delta.content;
-					}
-					if (content) {
-						responseText += content;
-						flushAssistantText();
-					}
-				} catch (e) {
-					console.error("Error parsing SSE data as JSON:", e, data);
-				}
+			* {
+				box-sizing: border-box;
+				margin: 0;
+				padding: 0;
 			}
-			if (sawDone) {
-				break;
+
+			body {
+				font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+				line-height: 1.6;
+				color: var(--text-color);
+				max-width: 800px;
+				margin: 0 auto;
+				padding: 1rem;
+				background-color: #fafafa;
 			}
-		}
 
-		// Add completed response to chat history
-		if (responseText.length > 0) {
-			chatHistory.push({ role: "assistant", content: responseText });
-		}
-	} catch (error) {
-		console.error("Error:", error);
-		addMessageToChat(
-			"assistant",
-			"Sorry, there was an error processing your request.",
-		);
-	} finally {
-		// Hide typing indicator
-		typingIndicator.classList.remove("visible");
-
-		// Re-enable input
-		isProcessing = false;
-		userInput.disabled = false;
-		sendButton.disabled = false;
-		userInput.focus();
-	}
-}
-
-/**
- * Helper function to add message to chat
- */
-function addMessageToChat(role, content) {
-	const messageEl = document.createElement("div");
-	messageEl.className = `message ${role}-message`;
-	messageEl.innerHTML = `<p>${content}</p>`;
-	chatMessages.appendChild(messageEl);
-
-	// Scroll to bottom
-	chatMessages.scrollTop = chatMessages.scrollHeight;
-}
-
-function consumeSseEvents(buffer) {
-	let normalized = buffer.replace(/\r/g, "");
-	const events = [];
-	let eventEndIndex;
-	while ((eventEndIndex = normalized.indexOf("\n\n")) !== -1) {
-		const rawEvent = normalized.slice(0, eventEndIndex);
-		normalized = normalized.slice(eventEndIndex + 2);
-
-		const lines = rawEvent.split("\n");
-		const dataLines = [];
-		for (const line of lines) {
-			if (line.startsWith("data:")) {
-				dataLines.push(line.slice("data:".length).trimStart());
+			header {
+				text-align: center;
+				margin-bottom: 1.5rem;
+				padding: 1rem 0;
+				border-bottom: 1px solid var(--border-color);
+				position: relative;
 			}
-		}
-		if (dataLines.length === 0) continue;
-		events.push(dataLines.join("\n"));
-	}
-	return { events, buffer: normalized };
-}
+
+			h1 {
+				font-size: 1.5rem;
+				color: var(--primary-color);
+			}
+
+			header p {
+				color: var(--text-light);
+				font-size: 0.9rem;
+				margin-bottom: 0.75rem;
+			}
+
+			.utility-controls {
+				display: flex;
+				justify-content: center;
+				gap: 0.5rem;
+			}
+
+			.btn-secondary {
+				background: white;
+				border: 1px solid var(--border-color);
+				color: var(--text-color);
+				padding: 0.35rem 0.75rem;
+				font-size: 0.85rem;
+				border-radius: 6px;
+				cursor: pointer;
+				transition: all 0.2s;
+			}
+
+			.btn-secondary:hover {
+				background: var(--light-bg);
+				border-color: #cbd5e1;
+			}
+
+			.chat-container {
+				display: flex;
+				flex-direction: column;
+				height: calc(100vh - 220px);
+				min-height: 450px;
+				border: 1px solid var(--border-color);
+				border-radius: 12px;
+				overflow: hidden;
+				background-color: white;
+				box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
+			}
+
+			.chat-messages {
+				flex: 1;
+				overflow-y: auto;
+				padding: 1.25rem;
+				background-color: var(--light-bg);
+				display: flex;
+				flex-direction: column;
+				gap: 1rem;
+			}
+
+			.message {
+				padding: 0.75rem 1rem;
+				border-radius: 12px;
+				max-width: 85%;
+				width: fit-content;
+				box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+			}
+
+			.message p {
+				white-space: pre-line;
+				margin: 0;
+				overflow-wrap: break-word;
+			}
+
+			.user-message {
+				background-color: var(--user-msg-bg);
+				align-self: flex-end;
+				border-bottom-right-radius: 2px;
+				color: #4a2700;
+			}
+
+			.assistant-message {
+				background-color: var(--assistant-msg-bg);
+				align-self: flex-start;
+				border-bottom-left-radius: 2px;
+				border: 1px solid var(--border-color);
+			}
+
+			.message-input {
+				display: flex;
+				align-items: flex-end;
+				padding: 0.75rem;
+				border-top: 1px solid var(--border-color);
+				background-color: white;
+			}
+
+			#user-input {
+				flex: 1;
+				padding: 0.75rem;
+				border: 1px solid var(--border-color);
+				border-radius: 6px;
+				font-family: inherit;
+				font-size: 1rem;
+				resize: none;
+				min-height: 44px;
+				max-height: 150px;
+				outline: none;
+			}
+
+			#user-input:focus {
+				border-color: var(--primary-color);
+				box-shadow: 0 0 0 2px rgba(246, 130, 31, 0.15);
+			}
+
+			#send-button {
+				margin-left: 0.5rem;
+				padding: 0 1.25rem;
+				height: 44px;
+				background-color: var(--primary-color);
+				color: white;
+				border: none;
+				border-radius: 6px;
+				font-weight: 600;
+				cursor: pointer;
+				transition: background-color 0.2s;
+			}
+
+			#send-button:disabled {
+				background-color: #d1d5db;
+				color: #9ca3af;
+				cursor: not-allowed;
+			}
+
+			.typing-indicator {
+				display: none;
+				align-self: flex-start;
+				font-style: italic;
+				color: var(--text-light);
+				font-size: 0.875rem;
+				padding: 0.5rem 1rem;
+				background: #f3f4f6;
+				border-radius: 12px;
+			}
+
+			.typing-indicator.visible {
+				display: block;
+			}
+
+			/* --- ChatGPT style History List Modal --- */
+			.modal-overlay {
+				display: none;
+				position: fixed;
+				top: 0;
+				left: 0;
+				width: 100%;
+				height: 100%;
+				background: rgba(0, 0, 0, 0.4);
+				backdrop-filter: blur(4px);
+				z-index: 1000;
+				justify-content: center;
+				align-items: center;
+			}
+			.modal-overlay.active {
+				display: flex;
+			}
+			.modal-box {
+				background: white;
+				padding: 1.5rem;
+				border-radius: 12px;
+				width: 90%;
+				max-width: 500px;
+				max-height: 70vh;
+				display: flex;
+				flex-direction: column;
+			}
+			.modal-header {
+				display: flex;
+				justify-content: space-between;
+				align-items: center;
+				margin-bottom: 1rem;
+				border-bottom: 1px solid var(--border-color);
+				padding-bottom: 0.5rem;
+			}
+			.modal-body {
+				flex: 1;
+				overflow-y: auto;
+				margin-bottom: 1rem;
+			}
+			.history-session-item {
+				padding: 0.75rem;
+				border: 1px solid var(--border-color);
+				border-radius: 8px;
+				margin-bottom: 0.5rem;
+				background: var(--light-bg);
+				cursor: pointer;
+				transition: all 0.2s;
+				display: flex;
+				justify-content: space-between;
+				align-items: center;
+			}
+			.history-session-item:hover {
+				border-color: var(--primary-color);
+				background: #fffdfa;
+			}
+			.session-title {
+				font-weight: 600;
+				font-size: 0.9rem;
+				white-space: nowrap;
+				overflow: hidden;
+				text-overflow: ellipsis;
+				flex: 1;
+			}
+			.session-date {
+				font-size: 0.75rem;
+				color: var(--text-light);
+				margin-left: 0.5rem;
+			}
+
+			footer {
+				margin-top: 1.5rem;
+				text-align: center;
+				font-size: 0.85rem;
+				color: var(--text-light);
+			}
+		</style>
+	</head>
+	<body>
+		<header>
+			<h1>Cloudflare AI Chat</h1>
+			<p>Powered by Cloudflare Workers AI</p>
+			<div class="utility-controls">
+				<button id="history-button" class="btn-secondary">📜 Past Conversations</button>
+				<button id="new-chat-button" class="btn-secondary">➕ New Chat</button>
+			</div>
+		</header>
+
+		<div class="chat-container">
+			<div id="chat-messages" class="chat-messages">
+				<div class="typing-indicator" id="typing-indicator">
+					AI is thinking...
+				</div>
+			</div>
+
+			<div class="message-input">
+				<textarea id="user-input" placeholder="Type your message here..." rows="1" autofocus></textarea>
+				<button id="send-button">Send</button>
+			</div>
+		</div>
+
+		<div id="history-modal" class="modal-overlay">
+			<div class="modal-box">
+				<div class="modal-header">
+					<h3>Saved Conversations</h3>
+					<button id="close-history" class="btn-secondary">✕ Close</button>
+				</div>
+				<div id="history-log-body" class="modal-body">
+					</div>
+			</div>
+		</div>
+
+		<footer>
+			<p>Cloudflare Workers AI Chat Template &copy; 2026</p>
+		</footer>
+
+		<script src="chat.js"></script>
+	</body>
+</html>
