@@ -1,304 +1,294 @@
-<!doctype html>
-<html lang="en">
-	<head>
-		<meta charset="UTF-8" />
-		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-		<title>LLM Chat App</title>
-		<style>
-			:root {
-				--primary-color: #f6821f;
-				--primary-hover: #e67e22;
-				--light-bg: #f9fafb;
-				--border-color: #e5e7eb;
-				--text-color: #1f2937;
-				--text-light: #6b7280;
-				--user-msg-bg: #fff2e6;
-				--assistant-msg-bg: #ffffff;
-			}
+/**
+ * LLM Chat App Frontend - ChatGPT Multi-Session Architecture
+ */
 
-			* {
-				box-sizing: border-box;
-				margin: 0;
-				padding: 0;
-			}
+// DOM elements
+const chatMessages = document.getElementById("chat-messages");
+const userInput = document.getElementById("user-input");
+const sendButton = document.getElementById("send-button");
+const typingIndicator = document.getElementById("typing-indicator");
 
-			body {
-				font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-				line-height: 1.6;
-				color: var(--text-color);
-				max-width: 800px;
-				margin: 0 auto;
-				padding: 1rem;
-				background-color: #fafafa;
-			}
+// Utility Navigation Controls
+const historyButton = document.getElementById("history-button");
+const newChatButton = document.getElementById("new-chat-button");
+const historyModal = document.getElementById("history-modal");
+const closeHistory = document.getElementById("close-history");
+const historyLogBody = document.getElementById("history-log-body");
 
-			header {
-				text-align: center;
-				margin-bottom: 1.5rem;
-				padding: 1rem 0;
-				border-bottom: 1px solid var(--border-color);
-				position: relative;
-			}
+// Storage Schema Keys
+const SESSIONS_STORAGE_KEY = "cf_ai_chat_sessions_v1";
+const CURRENT_ID_STORAGE_KEY = "cf_ai_chat_current_id_v1";
 
-			h1 {
-				font-size: 1.5rem;
-				color: var(--primary-color);
-			}
+// Default system baseline greeting
+const DEFAULT_WELCOME = "Hello! I'm an LLM chat app powered by Cloudflare Workers AI. How can I help you today?";
 
-			header p {
-				color: var(--text-light);
-				font-size: 0.9rem;
-				margin-bottom: 0.75rem;
-			}
+// Application Memory State Structure
+let chatSessions = JSON.parse(localStorage.getItem(SESSIONS_STORAGE_KEY)) || [];
+let currentSessionId = localStorage.getItem(CURRENT_ID_STORAGE_KEY) || null;
+let isProcessing = false;
 
-			.utility-controls {
-				display: flex;
-				justify-content: center;
-				gap: 0.5rem;
-			}
+/**
+ * Returns the currently active chat session object
+ */
+function getCurrentSession() {
+	return chatSessions.find(s => s.id === currentSessionId);
+}
 
-			.btn-secondary {
-				background: white;
-				border: 1px solid var(--border-color);
-				color: var(--text-color);
-				padding: 0.35rem 0.75rem;
-				font-size: 0.85rem;
-				border-radius: 6px;
-				cursor: pointer;
-				transition: all 0.2s;
-			}
+/**
+ * Generates an entirely fresh active conversation session tracking frame
+ */
+function createNewSession() {
+	const newId = "session_" + Date.now();
+	const newSession = {
+		id: newId,
+		title: "New Chat Session",
+		timestamp: new Date().toLocaleDateString(),
+		history: [
+			{ role: "assistant", content: DEFAULT_WELCOME }
+		]
+	};
+	chatSessions.unshift(newSession); // Push to the top of the history list
+	currentSessionId = newId;
+	saveState();
+	renderCurrentChat();
+}
 
-			.btn-secondary:hover {
-				background: var(--light-bg);
-				border-color: #cbd5e1;
-			}
+/**
+ * Saves current app states into permanent local storage vectors
+ */
+function saveState() {
+	localStorage.setItem(SESSIONS_STORAGE_KEY, JSON.stringify(chatSessions));
+	localStorage.setItem(CURRENT_ID_STORAGE_KEY, currentSessionId);
+}
 
-			.chat-container {
-				display: flex;
-				flex-direction: column;
-				height: calc(100vh - 220px);
-				min-height: 450px;
-				border: 1px solid var(--border-color);
-				border-radius: 12px;
-				overflow: hidden;
-				background-color: white;
-				box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
-			}
+/**
+ * Renders the active conversation message history into the main window view
+ */
+function renderCurrentChat() {
+	// Wipe out old message element layouts cleanly
+	const existingMsgs = chatMessages.querySelectorAll(".message");
+	existingMsgs.forEach(el => el.remove());
 
-			.chat-messages {
-				flex: 1;
-				overflow-y: auto;
-				padding: 1.25rem;
-				background-color: var(--light-bg);
-				display: flex;
-				flex-direction: column;
-				gap: 1rem;
-			}
+	const session = getCurrentSession();
+	if (!session) return;
 
-			.message {
-				padding: 0.75rem 1rem;
-				border-radius: 12px;
-				max-width: 85%;
-				width: fit-content;
-				box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
-			}
+	session.history.forEach(msg => {
+		if (msg.role !== "system") {
+			addMessageToChatUi(msg.role, msg.content);
+		}
+	});
+}
 
-			.message p {
-				white-space: pre-line;
-				margin: 0;
-				overflow-wrap: break-word;
-			}
+// Auto-resize textarea as user types
+userInput.addEventListener("input", function () {
+	this.style.height = "auto";
+	this.style.height = this.scrollHeight + "px";
+});
 
-			.user-message {
-				background-color: var(--user-msg-bg);
-				align-self: flex-end;
-				border-bottom-right-radius: 2px;
-				color: #4a2700;
-			}
+// Send message on Enter (without Shift)
+userInput.addEventListener("keydown", function (e) {
+	if (e.key === "Enter" && !e.shiftKey) {
+		e.preventDefault();
+		sendMessage();
+	}
+});
 
-			.assistant-message {
-				background-color: var(--assistant-msg-bg);
-				align-self: flex-start;
-				border-bottom-left-radius: 2px;
-				border: 1px solid var(--border-color);
-			}
+// Action Event Wireups
+sendButton.addEventListener("click", sendMessage);
 
-			.message-input {
-				display: flex;
-				align-items: flex-end;
-				padding: 0.75rem;
-				border-top: 1px solid var(--border-color);
-				background-color: white;
-			}
+// "New Chat" mimics GPT: Saves what you have, switches context cleanly
+newChatButton.addEventListener("click", () => {
+	const current = getCurrentSession();
+	// Only create a new session if the current one has actual user interactions
+	if (current && current.history.length <= 1) {
+		alert("You are already in a clean new chat window.");
+		return;
+	}
+	createNewSession();
+});
 
-			#user-input {
-				flex: 1;
-				padding: 0.75rem;
-				border: 1px solid var(--border-color);
-				border-radius: 6px;
-				font-family: inherit;
-				font-size: 1rem;
-				resize: none;
-				min-height: 44px;
-				max-height: 150px;
-				outline: none;
-			}
+// Build the Session Sidebar List View
+historyButton.addEventListener("click", () => {
+	historyLogBody.innerHTML = "";
 
-			#user-input:focus {
-				border-color: var(--primary-color);
-				box-shadow: 0 0 0 2px rgba(246, 130, 31, 0.15);
-			}
+	if (chatSessions.length === 0) {
+		historyLogBody.innerHTML = `<p style="color: var(--text-light); text-align:center; padding:1rem;">No past chat rooms recorded.</p>`;
+	} else {
+		chatSessions.forEach(session => {
+			const item = document.createElement("div");
+			item.className = "history-session-item";
+			// Grab the first user message as the title preview if it exists
+			const titleText = session.title;
+			
+			item.innerHTML = `
+				<div class="session-title">${escapeHtml(titleText)}</div>
+				<div class="session-date">${session.timestamp}</div>
+			`;
+			
+			// Switch chat instance on click
+			item.addEventListener("click", () => {
+				currentSessionId = session.id;
+				saveState();
+				renderCurrentChat();
+				historyModal.classList.remove("active");
+			});
 
-			#send-button {
-				margin-left: 0.5rem;
-				padding: 0 1.25rem;
-				height: 44px;
-				background-color: var(--primary-color);
-				color: white;
-				border: none;
-				border-radius: 6px;
-				font-weight: 600;
-				cursor: pointer;
-				transition: background-color 0.2s;
-			}
+			historyLogBody.appendChild(item);
+		});
+	}
+	historyModal.classList.add("active");
+});
 
-			#send-button:disabled {
-				background-color: #d1d5db;
-				color: #9ca3af;
-				cursor: not-allowed;
-			}
+closeHistory.addEventListener("click", () => historyModal.classList.remove("active"));
+window.addEventListener("click", (e) => { if (e.target === historyModal) historyModal.classList.remove("active"); });
 
-			.typing-indicator {
-				display: none;
-				align-self: flex-start;
-				font-style: italic;
-				color: var(--text-light);
-				font-size: 0.875rem;
-				padding: 0.5rem 1rem;
-				background: #f3f4f6;
-				border-radius: 12px;
-			}
+/**
+ * Handles communication with backend and manages history states
+ */
+async function sendMessage() {
+	const message = userInput.value.trim();
+	if (message === "" || isProcessing) return;
 
-			.typing-indicator.visible {
-				display: block;
-			}
+	let session = getCurrentSession();
+	if (!session) {
+		createNewSession();
+		session = getCurrentSession();
+	}
 
-			/* --- ChatGPT style History List Modal --- */
-			.modal-overlay {
-				display: none;
-				position: fixed;
-				top: 0;
-				left: 0;
-				width: 100%;
-				height: 100%;
-				background: rgba(0, 0, 0, 0.4);
-				backdrop-filter: blur(4px);
-				z-index: 1000;
-				justify-content: center;
-				align-items: center;
-			}
-			.modal-overlay.active {
-				display: flex;
-			}
-			.modal-box {
-				background: white;
-				padding: 1.5rem;
-				border-radius: 12px;
-				width: 90%;
-				max-width: 500px;
-				max-height: 70vh;
-				display: flex;
-				flex-direction: column;
-			}
-			.modal-header {
-				display: flex;
-				justify-content: space-between;
-				align-items: center;
-				margin-bottom: 1rem;
-				border-bottom: 1px solid var(--border-color);
-				padding-bottom: 0.5rem;
-			}
-			.modal-body {
-				flex: 1;
-				overflow-y: auto;
-				margin-bottom: 1rem;
-			}
-			.history-session-item {
-				padding: 0.75rem;
-				border: 1px solid var(--border-color);
-				border-radius: 8px;
-				margin-bottom: 0.5rem;
-				background: var(--light-bg);
-				cursor: pointer;
-				transition: all 0.2s;
-				display: flex;
-				justify-content: space-between;
-				align-items: center;
-			}
-			.history-session-item:hover {
-				border-color: var(--primary-color);
-				background: #fffdfa;
-			}
-			.session-title {
-				font-weight: 600;
-				font-size: 0.9rem;
-				white-space: nowrap;
-				overflow: hidden;
-				text-overflow: ellipsis;
-				flex: 1;
-			}
-			.session-date {
-				font-size: 0.75rem;
-				color: var(--text-light);
-				margin-left: 0.5rem;
-			}
+	isProcessing = true;
+	userInput.disabled = true;
+	sendButton.disabled = true;
 
-			footer {
-				margin-top: 1.5rem;
-				text-align: center;
-				font-size: 0.85rem;
-				color: var(--text-light);
+	// Append layouts
+	addMessageToChatUi("user", message);
+	session.history.push({ role: "user", content: message });
+
+	// Auto update title based on first user message topic
+	if (session.title === "New Chat Session" || session.history.length <= 3) {
+		session.title = message.length > 30 ? message.substring(0, 30) + "..." : message;
+	}
+	saveState();
+
+	userInput.value = "";
+	userInput.style.height = "auto";
+	typingIndicator.classList.add("visible");
+	scrollToBottom();
+
+	let responseText = "";
+	let assistantTextEl = null;
+
+	try {
+		const response = await fetch("/api/chat", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ messages: session.history }),
+		});
+
+		if (!response.ok) throw new Error("Failed response state.");
+		if (!response.body) throw new Error("Null response payload stream.");
+
+		typingIndicator.classList.remove("visible");
+
+		const assistantMessageEl = document.createElement("div");
+		assistantMessageEl.className = "message assistant-message";
+		assistantMessageEl.innerHTML = "<p></p>";
+		chatMessages.appendChild(assistantMessageEl);
+		assistantTextEl = assistantMessageEl.querySelector("p");
+
+		const reader = response.body.getReader();
+		const decoder = new TextDecoder();
+		let buffer = "";
+
+		const processEvents = (events) => {
+			for (const data of events) {
+				if (data === "[DONE]") return true;
+				try {
+					const jsonData = JSON.parse(data);
+					const content = jsonData.response || jsonData.choices?.[0]?.delta?.content || "";
+					if (content) {
+						responseText += content;
+						assistantTextEl.textContent = responseText; 
+						scrollToBottom();
+					}
+				} catch (e) {
+					console.error("SSE parse error", e);
+				}
 			}
-		</style>
-	</head>
-	<body>
-		<header>
-			<h1>Cloudflare AI Chat</h1>
-			<p>Powered by Cloudflare Workers AI</p>
-			<div class="utility-controls">
-				<button id="history-button" class="btn-secondary">📜 Past Conversations</button>
-				<button id="new-chat-button" class="btn-secondary">➕ New Chat</button>
-			</div>
-		</header>
+			return false;
+		};
 
-		<div class="chat-container">
-			<div id="chat-messages" class="chat-messages">
-				<div class="typing-indicator" id="typing-indicator">
-					AI is thinking...
-				</div>
-			</div>
+		while (true) {
+			const { done, value } = await reader.read();
+			if (done) {
+				const parsed = consumeSseEvents(buffer + "\n\n");
+				processEvents(parsed.events);
+				break;
+			}
+			buffer += decoder.decode(value, { stream: true });
+			const parsed = consumeSseEvents(buffer);
+			buffer = parsed.buffer;
+			if (processEvents(parsed.events)) break;
+		}
 
-			<div class="message-input">
-				<textarea id="user-input" placeholder="Type your message here..." rows="1" autofocus></textarea>
-				<button id="send-button">Send</button>
-			</div>
-		</div>
+		if (responseText.trim().length > 0) {
+			session.history.push({ role: "assistant", content: responseText });
+			saveState();
+		}
 
-		<div id="history-modal" class="modal-overlay">
-			<div class="modal-box">
-				<div class="modal-header">
-					<h3>Saved Conversations</h3>
-					<button id="close-history" class="btn-secondary">✕ Close</button>
-				</div>
-				<div id="history-log-body" class="modal-body">
-					</div>
-			</div>
-		</div>
+	} catch (error) {
+		console.error("Chat Execution Error:", error);
+		typingIndicator.classList.remove("visible");
+		addMessageToChatUi("assistant", "Sorry, there was an error processing your request.");
+	} finally {
+		isProcessing = false;
+		userInput.disabled = false;
+		sendButton.disabled = false;
+		userInput.focus();
+	}
+}
 
-		<footer>
-			<p>Cloudflare Workers AI Chat Template &copy; 2026</p>
-		</footer>
+function addMessageToChatUi(role, content) {
+	const messageEl = document.createElement("div");
+	messageEl.className = `message ${role}-message`;
+	messageEl.innerHTML = `<p></p>`;
+	messageEl.querySelector("p").textContent = content; 
+	chatMessages.insertBefore(messageEl, typingIndicator);
+	scrollToBottom();
+}
 
-		<script src="chat.js"></script>
-	</body>
-</html>
+function scrollToBottom() {
+	chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+function consumeSseEvents(buffer) {
+	let normalized = buffer.replace(/\r/g, "");
+	const events = [];
+	let eventEndIndex;
+	while ((eventEndIndex = normalized.indexOf("\n\n")) !== -1) {
+		const rawEvent = normalized.slice(0, eventEndIndex);
+		normalized = normalized.slice(eventEndIndex + 2);
+		const lines = rawEvent.split("\n");
+		const dataLines = [];
+		for (const line of lines) {
+			if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart());
+		}
+		if (dataLines.length === 0) continue;
+		events.push(dataLines.join("\n"));
+	}
+	return { events, buffer: normalized };
+}
+
+function escapeHtml(str) {
+	return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+}
+
+// App Initialization Cycle Setup
+if (!currentSessionId || !getCurrentSession()) {
+	if (chatSessions.length > 0) {
+		currentSessionId = chatSessions[0].id;
+	} else {
+		createNewSession();
+	}
+}
+saveState();
+renderCurrentChat();
